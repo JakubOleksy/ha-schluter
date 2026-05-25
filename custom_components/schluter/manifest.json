@@ -12,6 +12,6 @@
   "issue_tracker": "https://github.com/JakubOleksy/ha-schluter/issues",
   "requirements": [],
   "ssdp": [],
-  "version": "0.5.0",
+  "version": "0.5.1",
   "zeroconf": []
 }

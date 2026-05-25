@@ -271,32 +271,11 @@ class SchluterApi:
         """Set thermostat regulation mode."""
         self._sessionid = sessionid
         api_mode = _to_api_setpoint_mode(regulation_mode)
-        errors: list[Exception] = []
-        attempts: list[tuple[str, str, dict[str, Any]]] = [
-            ("PUT", f"/device/{serialnumber}/attribute", {"setpointMode": api_mode}),
-            ("PUT", f"/device/{serialnumber}", {"regulationMode": api_mode}),
-            ("PUT", f"/device/{serialnumber}", {"mode": api_mode}),
-            ("PUT", f"/device/{serialnumber}", {"setpointMode": api_mode}),
-            (
-                "POST",
-                f"/device/{serialnumber}/attribute",
-                {"name": "setpointMode", "value": api_mode},
-            ),
-            (
-                "POST",
-                f"/device/{serialnumber}/attribute",
-                {"attribute": "mode", "value": api_mode},
-            ),
-        ]
-
-        for method, path, payload in attempts:
-            try:
-                await self._request(method, path, json_data=payload)
-                return
-            except ApiError as err:
-                errors.append(err)
-
-        raise ApiError(f"Unable to set mode for {serialnumber}: {errors[-1]}")
+        await self._request(
+            "PUT",
+            f"/device/{serialnumber}/attribute",
+            json_data={"setpointMode": api_mode},
+        )
 
     async def _async_get_devices_for_locations(self) -> list[dict[str, Any]]:
         """Discover devices and merge runtime attributes for thermostat entities."""
@@ -770,5 +749,5 @@ def _to_api_setpoint_mode(mode: str) -> str:
     if value == REGULATION_MODE_SCHEDULE:
         return "auto"
     if value == REGULATION_MODE_AWAY:
-        return "away"
+        return "off"
     return "manual"
