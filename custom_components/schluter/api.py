@@ -71,6 +71,7 @@ class SchluterApi:
         self._sessionid: str | None = None
         self._sessionid_timestamp: datetime | None = None
         self._app_version: str = DEFAULT_APP_VERSION
+        self._account_id: str | None = None
 
     @property
     def sessionid(self) -> str:
@@ -166,6 +167,10 @@ class SchluterApi:
         if not session_id:
             raise ApiError("Login succeeded but no session id found")
 
+        account_id = _find_key(data, "id") if isinstance(data.get("account"), dict) else None
+        if account_id is not None:
+            self._account_id = str(account_id)
+
         self._sessionid = session_id
         self._sessionid_timestamp = datetime.now()
         return session_id
@@ -173,18 +178,7 @@ class SchluterApi:
     async def async_get_current_thermostats(self, sessionid: str) -> dict[str, Thermostat]:
         """Fetch and normalize thermostat data."""
         self._sessionid = sessionid
-        devices: list[dict[str, Any]] = []
-
-        try:
-            payload, _ = await self._request("GET", "/devices")
-            devices = self._extract_device_list(payload)
-        except ApiError as err:
-            # The backend can require location-scoped discovery for some accounts.
-            if str(err) != "ACCSESSEXC":
-                raise
-
-        if not devices:
-            devices = await self._async_get_devices_from_locations()
+        devices = await self._async_get_devices_for_locations()
 
         thermostats = {
             item.thermostat_id: item
@@ -202,6 +196,8 @@ class SchluterApi:
         self._sessionid = sessionid
         errors: list[Exception] = []
         attempts: list[tuple[str, str, dict[str, Any]]] = [
+            ("PUT", f"/device/{serialnumber}/attribute", {"roomSetpoint": target_temp}),
+            ("PUT", f"/device/{serialnumber}/attribute", {"setPointTemp": target_temp}),
             ("PUT", f"/device/{serialnumber}", {"setPointTemp": target_temp}),
             ("PUT", f"/device/{serialnumber}", {"setpoint": target_temp}),
             (
@@ -230,20 +226,22 @@ class SchluterApi:
     ) -> None:
         """Set thermostat regulation mode."""
         self._sessionid = sessionid
+        api_mode = _to_api_setpoint_mode(regulation_mode)
         errors: list[Exception] = []
         attempts: list[tuple[str, str, dict[str, Any]]] = [
-            ("PUT", f"/device/{serialnumber}", {"regulationMode": regulation_mode}),
-            ("PUT", f"/device/{serialnumber}", {"mode": regulation_mode}),
-            ("PUT", f"/device/{serialnumber}", {"setpointMode": regulation_mode}),
+            ("PUT", f"/device/{serialnumber}/attribute", {"setpointMode": api_mode}),
+            ("PUT", f"/device/{serialnumber}", {"regulationMode": api_mode}),
+            ("PUT", f"/device/{serialnumber}", {"mode": api_mode}),
+            ("PUT", f"/device/{serialnumber}", {"setpointMode": api_mode}),
             (
                 "POST",
                 f"/device/{serialnumber}/attribute",
-                {"name": "regulationMode", "value": regulation_mode},
+                {"name": "setpointMode", "value": api_mode},
             ),
             (
                 "POST",
                 f"/device/{serialnumber}/attribute",
-                {"attribute": "mode", "value": regulation_mode},
+                {"attribute": "mode", "value": api_mode},
             ),
         ]
 
@@ -256,22 +254,74 @@ class SchluterApi:
 
         raise ApiError(f"Unable to set mode for {serialnumber}: {errors[-1]}")
 
-    async def _async_get_devices_from_locations(self) -> list[dict[str, Any]]:
-        """Discover devices by expanding location endpoints."""
-        locations_payload, _ = await self._request("GET", "/locations")
-        locations = self._extract_location_ids(locations_payload)
-        if not locations:
-            return []
+    async def _async_get_devices_for_locations(self) -> list[dict[str, Any]]:
+        """Discover devices and merge runtime attributes for thermostat entities."""
+        locations_path = "/locations"
+        if self._account_id:
+            locations_path += f"?account$id={self._account_id}"
 
-        devices: list[dict[str, Any]] = []
+        locations_payload, _ = await self._request("GET", locations_path)
+        locations = self._extract_location_ids(locations_payload)
+        if not locations and self._account_id:
+            account_devices, _ = await self._request("GET", f"/devices?account$id={self._account_id}")
+            base_devices = self._extract_device_list(account_devices)
+            return await self._async_enrich_devices(base_devices)
+
+        base_devices: list[dict[str, Any]] = []
         for location_id in locations:
             try:
-                location_payload, _ = await self._request("GET", f"/location/{location_id}")
+                payload, _ = await self._request("GET", f"/devices?location$id={location_id}")
             except ApiError:
                 continue
-            devices.extend(self._extract_device_list(location_payload))
+            base_devices.extend(self._extract_device_list(payload))
 
-        return devices
+        if not base_devices and self._account_id:
+            account_devices, _ = await self._request("GET", f"/devices?account$id={self._account_id}")
+            base_devices = self._extract_device_list(account_devices)
+
+        if not base_devices:
+            payload, _ = await self._request("GET", "/devices")
+            base_devices = self._extract_device_list(payload)
+
+        return await self._async_enrich_devices(base_devices)
+
+    async def _async_enrich_devices(self, base_devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fetch live attributes for each device and merge them into a single model."""
+        attr_query = (
+            "setpointMode,roomSetpoint,roomSetpointMin,roomSetpointMax,"
+            "roomTemperatureDisplay,outputPercentDisplay,occupancyMode,"
+            "gfciStatus,floorSetpointPwm,floorSetpointPwmMin,floorSetpointPwmMax,airFloorMode"
+        )
+
+        enriched: list[dict[str, Any]] = []
+        for device in base_devices:
+            device_id = _pick(device, "id", "deviceId")
+            if device_id is None:
+                continue
+
+            merged = dict(device)
+            try:
+                attrs_payload, _ = await self._request(
+                    "GET",
+                    f"/device/{device_id}/attribute?attributes={attr_query}",
+                )
+                attrs = attrs_payload.get("data", attrs_payload)
+                if isinstance(attrs, dict):
+                    merged.update(attrs)
+            except ApiError:
+                pass
+
+            try:
+                status_payload, _ = await self._request("GET", f"/device/{device_id}/status")
+                status_data = status_payload.get("data", status_payload)
+                if isinstance(status_data, dict):
+                    merged.update(status_data)
+            except ApiError:
+                pass
+
+            enriched.append(merged)
+
+        return enriched
 
     async def _request(
         self,
@@ -298,6 +348,7 @@ class SchluterApi:
         if headers:
             request_headers.update(headers)
         if include_session and self._sessionid:
+            request_headers.setdefault("Session-Id", self._sessionid)
             request_headers.setdefault("session-id", self._sessionid)
             request_headers.setdefault("x-session-id", self._sessionid)
 
@@ -384,7 +435,7 @@ class SchluterApi:
             if isinstance(value, str) and value:
                 return value
 
-        for header in ("session-id", "x-session-id"):
+        for header in ("Session-Id", "session-id", "x-session-id"):
             value = response.headers.get(header)
             if value:
                 return value
@@ -464,23 +515,44 @@ class SchluterApi:
             return None
 
         name = str(_pick(device, "name", "deviceName", "label") or thermostat_id)
-        sw_version = str(_pick(device, "swVersion", "firmwareVersion", "version") or "")
+        sw_version = str(
+            _pick(
+                device,
+                "swVersion",
+                "firmwareVersion",
+                "version",
+                default=(device.get("signature", {}).get("softVersion") if isinstance(device.get("signature"), dict) else ""),
+            )
+            or ""
+        )
+        if isinstance(device.get("signature"), dict):
+            soft = device["signature"].get("softVersion")
+            if isinstance(soft, dict):
+                sw_version = f"{soft.get('major', 0)}.{soft.get('middle', 0)}.{soft.get('minor', 0)}"
+
+        room_temp_obj = _pick(device, "roomTemperatureDisplay")
+        if isinstance(room_temp_obj, dict):
+            room_temp = room_temp_obj.get("value")
+        else:
+            room_temp = None
 
         current_temp = float(
             _pick(
                 device,
+                "roomTemperatureDisplayValue",
                 "temperature",
                 "currentTemperature",
                 "ambientTemperature",
                 "floorTemperature",
                 "temp",
-                default=0.0,
+                default=room_temp if room_temp is not None else 0.0,
             )
-            or 0.0
+            or (room_temp if room_temp is not None else 0.0)
         )
         set_temp = float(
             _pick(
                 device,
+                "roomSetpoint",
                 "setPointTemp",
                 "setpoint",
                 "setPoint",
@@ -490,19 +562,35 @@ class SchluterApi:
             )
             or current_temp
         )
-        min_temp = float(_pick(device, "minTemp", "minimumTemperature", default=5.0) or 5.0)
-        max_temp = float(_pick(device, "maxTemp", "maximumTemperature", default=35.0) or 35.0)
+        min_temp = float(
+            _pick(device, "roomSetpointMin", "minTemp", "minimumTemperature", default=5.0)
+            or 5.0
+        )
+        max_temp = float(
+            _pick(device, "roomSetpointMax", "maxTemp", "maximumTemperature", default=35.0)
+            or 35.0
+        )
 
-        is_heating = bool(_pick(device, "isHeating", "heating", "heatingOn", default=False))
+        output = _pick(device, "outputPercentDisplay")
+        output_percent = 0
+        if isinstance(output, dict):
+            output_percent = int(output.get("percent", 0) or 0)
+
+        is_heating = bool(
+            _pick(device, "isHeating", "heating", "heatingOn", default=False)
+        ) or output_percent > 0
         load_watt = int(
             _pick(device, "loadMeasuredWatt", "power", "watt", "wattage", default=0) or 0
         )
         kwh_charge = float(_pick(device, "kwhCharge", "kWhCharge", "energyPrice", default=0.0) or 0.0)
 
         online_raw = _pick(device, "isOnline", "online", "connected", default=True)
+        status_value = str(_pick(device, "status", default="")).lower()
         is_online = bool(online_raw)
         if "offline" in device:
             is_online = not bool(device.get("offline"))
+        if status_value:
+            is_online = status_value == "online"
 
         mode = _normalize_regulation_mode(
             _pick(device, "regulationMode", "mode", "setpointMode", "controlMode")
@@ -566,10 +654,13 @@ def _looks_like_device(value: dict[str, Any]) -> bool:
         candidate in value
         for candidate in (
             "deviceId",
+            "identifier",
             "serialNumber",
             "deviceName",
             "currentTemperature",
             "setPointTemp",
+            "family",
+            "sku",
         )
     )
 
@@ -584,6 +675,11 @@ def _is_thermostat(device: dict[str, Any]) -> bool:
     return any(
         key in device
         for key in (
+            "family",
+            "airFloorMode",
+            "roomSetpoint",
+            "roomTemperatureDisplay",
+            "outputPercentDisplay",
             "setPointTemp",
             "setpoint",
             "targetTemperature",
@@ -603,3 +699,12 @@ def _normalize_regulation_mode(raw_mode: Any) -> str:
     if any(token in value for token in ("away", "off", "eco")):
         return REGULATION_MODE_AWAY
     return REGULATION_MODE_MANUAL
+
+
+def _to_api_setpoint_mode(mode: str) -> str:
+    value = str(mode).strip().lower()
+    if value == REGULATION_MODE_SCHEDULE:
+        return "auto"
+    if value == REGULATION_MODE_AWAY:
+        return "away"
+    return "manual"
