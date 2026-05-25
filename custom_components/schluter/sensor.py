@@ -1,4 +1,7 @@
-"""Break out the temperature of the thermostat into a separate sensor entity."""
+"""Break out thermostat telemetry into separate sensor entities."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from .api import Thermostat
 
@@ -8,6 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import UnitOfTemperature, UnitOfEnergy, UnitOfPower
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import SchluterData
@@ -153,48 +157,92 @@ class SchluterPowerSensor(SchluterEntity, SensorEntity):
         return ZERO_WATTS
 
 
-class SchluterEnergySensor(SchluterEntity, SensorEntity):
-    """Representation of a PowerSensor."""
+class SchluterEnergySensor(SchluterEntity, RestoreEntity, SensorEntity):
+    """Energy sensor derived by integrating measured watts over time."""
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_suggested_display_precision = 3
 
     def __init__(
         self,
         coordinator: DataUpdateCoordinator[dict[str, dict[str, Thermostat]]],
         thermostat_id: str,
-        values=60,
     ) -> None:
-        """Initialize the sensor."""
         super().__init__(coordinator, thermostat_id)
         self._attr_name = coordinator.data[thermostat_id].name + " Energy"
         self._thermostat_id = thermostat_id
         self._attr_unique_id = (
             f"{coordinator.data[thermostat_id].name}-{self._attr_device_class}"
         )
-        self._wattage_list = []
-        self._values = values
+        self._accumulated_kwh = 0.0
+        self._last_sample_at: datetime | None = None
+        self._last_power_w = 0.0
 
-    def add(self, watt):
-        """Queue a number wattage for kwh calculation."""
-        self._wattage_list.insert(0, watt)
-        if len(self._wattage_list) == self._values:
-            self._wattage_list.pop()
+    async def async_added_to_hass(self) -> None:
+        """Restore previous accumulated value after restart."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            try:
+                self._accumulated_kwh = float(last_state.state)
+            except (TypeError, ValueError):
+                self._accumulated_kwh = 0.0
+
+            restored_last_sample = last_state.attributes.get("last_sample_at")
+            if restored_last_sample:
+                try:
+                    self._last_sample_at = datetime.fromisoformat(restored_last_sample)
+                except ValueError:
+                    self._last_sample_at = None
+
+            try:
+                self._last_power_w = float(
+                    last_state.attributes.get("last_power_w", 0.0)
+                )
+            except (TypeError, ValueError):
+                self._last_power_w = 0.0
+
+        self._integrate_energy()
 
     @property
     def device_info(self):
-        """Return information to link this entity."""
+        return {"identifiers": {(DOMAIN, self._thermostat_id)}}
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | float | None]:
         return {
-            "identifiers": {(DOMAIN, self._thermostat_id)},
+            "last_sample_at": self._last_sample_at.isoformat()
+            if self._last_sample_at
+            else None,
+            "last_power_w": round(self._last_power_w, 3),
+            "source": "integrated_load_measured_watt",
         }
 
     @property
     def native_value(self) -> float:
-        """Return the state of the sensor."""
-        if self.coordinator.data[self._thermostat_id].is_heating:
-            self.add(self.coordinator.data[self._thermostat_id].load_measured_watt)
-        return round((sum(self._wattage_list) / self._values) / 1000, 2)
+        self._integrate_energy()
+        return round(self._accumulated_kwh, 3)
+
+    def _current_power_w(self) -> float:
+        thermostat = self.coordinator.data[self._thermostat_id]
+        if thermostat.is_heating:
+            return float(thermostat.load_measured_watt)
+        return 0.0
+
+    def _integrate_energy(self) -> None:
+        now = datetime.now(timezone.utc)
+        current_power_w = self._current_power_w()
+
+        if self._last_sample_at is not None:
+            elapsed_hours = (
+                max((now - self._last_sample_at).total_seconds(), 0) / 3600.0
+            )
+            self._accumulated_kwh += (self._last_power_w * elapsed_hours) / 1000.0
+
+        self._last_sample_at = now
+        self._last_power_w = current_power_w
 
 
 class SchluterEnergyPriceSensor(SchluterEntity, SensorEntity):
