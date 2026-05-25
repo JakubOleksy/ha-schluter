@@ -14,6 +14,10 @@ from yarl import URL
 _LOGGER = logging.getLogger(__name__)
 
 API_BASE_URL = "https://schluterditraheat.com/api"
+API_BASE_URL_FALLBACKS = (
+    "https://schluterditraheat.com/api",
+    "https://neviweb.com/api",
+)
 DEFAULT_APP_VERSION = "1.13.2"
 
 REGULATION_MODE_AWAY = "away"
@@ -84,48 +88,58 @@ class SchluterApi:
             "stayConnected": True,
         }
 
-        await self._async_update_app_version()
-
-        attempts = [
-            (
-                payload,
-                self._build_requester_header(app_version=self._app_version),
-            ),
-            (
-                payload,
-                self._build_requester_header(
-                    app_version=self._app_version,
-                    include_mobile=True,
-                ),
-            ),
-            (
-                {**payload, "stayConnected": False},
-                self._build_requester_header(app_version=self._app_version),
-            ),
-        ]
+        base_candidates = list(
+            dict.fromkeys((self._base_url, *API_BASE_URL_FALLBACKS))
+        )
 
         last_error: ApiError | None = None
         data: dict[str, Any] = {}
         response: ClientResponse | None = None
-        for try_payload, requester_header in attempts:
-            try:
-                data, response = await self._request(
-                    "POST",
-                    "/login",
-                    headers={
-                        "Content-Type": "application/json",
-                        "SWS-Requester": requester_header,
-                    },
-                    json_data=try_payload,
-                    include_session=False,
-                    requester_header=requester_header,
-                )
-                last_error = None
+
+        for base_url in base_candidates:
+            self._base_url = base_url.rstrip("/")
+            await self._async_update_app_version()
+
+            attempts = [
+                (
+                    payload,
+                    self._build_requester_header(app_version=self._app_version),
+                ),
+                (
+                    payload,
+                    self._build_requester_header(
+                        app_version=self._app_version,
+                        include_mobile=True,
+                    ),
+                ),
+                (
+                    {**payload, "stayConnected": False},
+                    self._build_requester_header(app_version=self._app_version),
+                ),
+            ]
+
+            for try_payload, requester_header in attempts:
+                try:
+                    data, response = await self._request(
+                        "POST",
+                        "/login",
+                        headers={
+                            "Content-Type": "application/json",
+                            "SWS-Requester": requester_header,
+                        },
+                        json_data=try_payload,
+                        include_session=False,
+                        requester_header=requester_header,
+                    )
+                    last_error = None
+                    break
+                except ApiError as err:
+                    last_error = err
+                    if str(err) != "ACCSESSEXC":
+                        raise
+
+            if last_error is None:
                 break
-            except ApiError as err:
-                last_error = err
-                if str(err) != "ACCSESSEXC":
-                    raise
 
         if last_error is not None:
             raise last_error
@@ -254,13 +268,15 @@ class SchluterApi:
         requester_header: str | None = None,
     ) -> tuple[dict[str, Any], ClientResponse]:
         url = str(URL(self._base_url + "/").join(URL(path.lstrip("/"))))
+        base_origin = URL(self._base_url).origin()
+        referer = str(URL(base_origin).join(URL("/login")))
         request_headers: dict[str, str] = {
             "Content-Type": "application/json",
             "SWS-Requester": requester_header
             or self._build_requester_header(app_version=self._app_version),
             "Accept": "application/json, text/plain, */*",
-            "Origin": "https://schluterditraheat.com",
-            "Referer": "https://schluterditraheat.com/login",
+            "Origin": str(base_origin),
+            "Referer": referer,
         }
         if headers:
             request_headers.update(headers)
