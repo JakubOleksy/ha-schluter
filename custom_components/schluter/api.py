@@ -86,7 +86,16 @@ class SchluterApi:
         return self._sessionid_timestamp or datetime.now()
 
     async def async_get_sessionid(self, username: str, password: str) -> str:
-        """Authenticate and obtain session id."""
+        """Authenticate and obtain a session id.
+
+        The Schluter/Neviweb backend enforces a per-account concurrent session
+        limit and returns ``ACCSESSEXC`` once it is exceeded. To avoid quickly
+        exhausting that limit we make a single login attempt and reuse the
+        resulting session across refresh cycles.
+        """
+        if self._sessionid:
+            return self._sessionid
+
         payload = {
             "username": username,
             "password": password,
@@ -94,86 +103,46 @@ class SchluterApi:
             "stayConnected": True,
         }
 
-        base_candidates = list(
-            dict.fromkeys((self._base_url, *API_BASE_URL_FALLBACKS))
-        )
+        await self._async_update_app_version()
+        _LOGGER.debug("Login attempt using base URL: %s", self._base_url)
 
-        last_error: ApiError | None = None
-        data: dict[str, Any] = {}
-        response: ClientResponse | None = None
+        requester_header = self._build_requester_header(app_version=self._app_version)
+        try:
+            data, response = await self._request(
+                "POST",
+                "/login",
+                headers={
+                    "Content-Type": "application/json",
+                    "SWS-Requester": requester_header,
+                },
+                json_data=payload,
+                include_session=False,
+                requester_header=requester_header,
+            )
+        except ApiError as err:
+            _LOGGER.debug("Login rejected on %s with error: %s", self._base_url, err)
+            raise
 
-        for base_url in base_candidates:
-            self._base_url = base_url.rstrip("/")
-            await self._async_update_app_version()
-            _LOGGER.debug("Login attempt using base URL: %s", self._base_url)
-
-            attempts = [
-                (
-                    payload,
-                    self._build_requester_header(app_version=self._app_version),
-                ),
-                (
-                    payload,
-                    self._build_requester_header(
-                        app_version=self._app_version,
-                        include_mobile=True,
-                    ),
-                ),
-                (
-                    {**payload, "stayConnected": False},
-                    self._build_requester_header(app_version=self._app_version),
-                ),
-            ]
-
-            for try_payload, requester_header in attempts:
-                try:
-                    data, response = await self._request(
-                        "POST",
-                        "/login",
-                        headers={
-                            "Content-Type": "application/json",
-                            "SWS-Requester": requester_header,
-                        },
-                        json_data=try_payload,
-                        include_session=False,
-                        requester_header=requester_header,
-                    )
-                    _LOGGER.debug(
-                        "Login successful on %s with session extraction source response headers/cookies/body",
-                        self._base_url,
-                    )
-                    last_error = None
-                    break
-                except ApiError as err:
-                    _LOGGER.debug(
-                        "Login rejected on %s with error: %s",
-                        self._base_url,
-                        err,
-                    )
-                    last_error = err
-                    if str(err) != "ACCSESSEXC":
-                        raise
-
-            if last_error is None:
-                break
-
-        if last_error is not None:
-            raise last_error
-
-        if response is None:
-            raise ApiError("Login response was empty")
+        _LOGGER.debug("Login successful on %s", self._base_url)
 
         session_id = self._extract_session_id(data, response)
         if not session_id:
             raise ApiError("Login succeeded but no session id found")
 
-        account_id = _find_key(data, "id") if isinstance(data.get("account"), dict) else None
+        account_id = None
+        if isinstance(data.get("account"), dict):
+            account_id = data["account"].get("id")
         if account_id is not None:
             self._account_id = str(account_id)
 
         self._sessionid = session_id
         self._sessionid_timestamp = datetime.now()
         return session_id
+
+    def invalidate_session(self) -> None:
+        """Discard cached session so the next call re-authenticates."""
+        self._sessionid = None
+        self._sessionid_timestamp = None
 
     async def async_get_current_thermostats(self, sessionid: str) -> dict[str, Thermostat]:
         """Fetch and normalize thermostat data."""
