@@ -14,6 +14,15 @@ from yarl import URL
 _LOGGER = logging.getLogger(__name__)
 
 API_BASE_URL = "https://schluterditraheat.com/api"
+SWS_REQUESTER = json.dumps(
+    {
+        "web-app": {
+            "interface": "schluter",
+            "app-version": "ha-custom-integration",
+        }
+    },
+    separators=(",", ":"),
+)
 
 REGULATION_MODE_AWAY = "away"
 REGULATION_MODE_MANUAL = "manual"
@@ -75,15 +84,9 @@ class SchluterApi:
 
     async def async_get_sessionid(self, username: str, password: str) -> str:
         """Authenticate and obtain session id."""
-        requester = {
-            "web-app": {
-                "interface": "schluter",
-                "app-version": "ha-custom-integration",
-            }
-        }
         headers = {
             "Content-Type": "application/json",
-            "SWS-Requester": json.dumps(requester, separators=(",", ":")),
+            "SWS-Requester": SWS_REQUESTER,
         }
         payload = {
             "username": username,
@@ -111,8 +114,19 @@ class SchluterApi:
     async def async_get_current_thermostats(self, sessionid: str) -> dict[str, Thermostat]:
         """Fetch and normalize thermostat data."""
         self._sessionid = sessionid
-        payload, _ = await self._request("GET", "/devices")
-        devices = self._extract_device_list(payload)
+        devices: list[dict[str, Any]] = []
+
+        try:
+            payload, _ = await self._request("GET", "/devices")
+            devices = self._extract_device_list(payload)
+        except ApiError as err:
+            # The backend can require location-scoped discovery for some accounts.
+            if str(err) != "ACCSESSEXC":
+                raise
+
+        if not devices:
+            devices = await self._async_get_devices_from_locations()
+
         thermostats = {
             item.thermostat_id: item
             for item in (self._to_thermostat(device) for device in devices)
@@ -183,6 +197,23 @@ class SchluterApi:
 
         raise ApiError(f"Unable to set mode for {serialnumber}: {errors[-1]}")
 
+    async def _async_get_devices_from_locations(self) -> list[dict[str, Any]]:
+        """Discover devices by expanding location endpoints."""
+        locations_payload, _ = await self._request("GET", "/locations")
+        locations = self._extract_location_ids(locations_payload)
+        if not locations:
+            return []
+
+        devices: list[dict[str, Any]] = []
+        for location_id in locations:
+            try:
+                location_payload, _ = await self._request("GET", f"/location/{location_id}")
+            except ApiError:
+                continue
+            devices.extend(self._extract_device_list(location_payload))
+
+        return devices
+
     async def _request(
         self,
         method: str,
@@ -194,6 +225,7 @@ class SchluterApi:
         url = str(URL(self._base_url + "/").join(URL(path.lstrip("/"))))
         request_headers: dict[str, str] = {
             "Content-Type": "application/json",
+            "SWS-Requester": SWS_REQUESTER,
         }
         if headers:
             request_headers.update(headers)
@@ -225,6 +257,9 @@ class SchluterApi:
 
         if response.status in (401, 403) or code in {"USRSESSEXP", "USRINVSESSION"}:
             raise InvalidSessionIdError(code or f"HTTP {response.status}")
+
+        if code in {"ACCSESSEXC"}:
+            raise ApiError(code)
 
         if code in {"USRINVPWD", "USRNOTFOUND", "AUTHFAILED"}:
             raise InvalidUserPasswordError(code)
@@ -279,6 +314,30 @@ class SchluterApi:
 
         _walk(payload)
         return devices
+
+    def _extract_location_ids(self, payload: dict[str, Any]) -> list[str]:
+        """Extract location identifiers from heterogeneous API responses."""
+        data = payload.get("data", payload)
+        candidates: list[str] = []
+
+        def _walk(value: Any) -> None:
+            if isinstance(value, dict):
+                location_id = _pick(value, "locationId", "id")
+                if location_id is not None and (
+                    "location" in value
+                    or "address" in value
+                    or "name" in value
+                    or "timezone" in value
+                ):
+                    candidates.append(str(location_id))
+                for nested in value.values():
+                    _walk(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    _walk(nested)
+
+        _walk(data)
+        return list(dict.fromkeys(candidates))
 
     def _to_thermostat(self, device: dict[str, Any]) -> Thermostat | None:
         if not _is_thermostat(device):
