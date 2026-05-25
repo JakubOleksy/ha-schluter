@@ -72,6 +72,12 @@ class SchluterApi:
         self._sessionid_timestamp: datetime | None = None
         self._app_version: str = DEFAULT_APP_VERSION
         self._account_id: str | None = None
+        self._refresh_token: str | None = None
+
+    @property
+    def refresh_token(self) -> str | None:
+        """Return the refresh token captured at login (or None)."""
+        return self._refresh_token
 
     @property
     def sessionid(self) -> str:
@@ -135,9 +141,77 @@ class SchluterApi:
         if account_id is not None:
             self._account_id = str(account_id)
 
+        refresh_token = self._extract_refresh_token(data, response)
+        if refresh_token:
+            self._refresh_token = refresh_token
+
         self._sessionid = session_id
         self._sessionid_timestamp = datetime.now()
         return session_id
+
+    async def async_connect_with_refresh_token(self, refresh_token: str) -> str:
+        """Mint a fresh session id from a stored refresh token without consuming a login slot."""
+        await self._async_update_app_version()
+        requester_header = self._build_requester_header(app_version=self._app_version)
+        headers = {
+            "Content-Type": "application/json",
+            "SWS-Requester": requester_header,
+            "refreshToken": refresh_token,
+        }
+        if self._sessionid:
+            headers["Session-Id"] = self._sessionid
+            headers["session-id"] = self._sessionid
+
+        data, response = await self._request(
+            "POST",
+            "/connect",
+            headers=headers,
+            include_session=False,
+            requester_header=requester_header,
+        )
+
+        session_id = self._extract_session_id(data, response)
+        if not session_id:
+            raise InvalidSessionIdError("/connect returned no session id")
+
+        if isinstance(data.get("account"), dict):
+            account_id = data["account"].get("id")
+            if account_id is not None:
+                self._account_id = str(account_id)
+
+        new_refresh = self._extract_refresh_token(data, response)
+        if new_refresh:
+            self._refresh_token = new_refresh
+        else:
+            self._refresh_token = refresh_token
+
+        self._sessionid = session_id
+        self._sessionid_timestamp = datetime.now()
+        return session_id
+
+    async def async_logout(self) -> None:
+        """Release the current session on the server so the slot is freed."""
+        if not self._sessionid:
+            return
+        requester_header = self._build_requester_header(app_version=self._app_version)
+        headers = {
+            "SWS-Requester": requester_header,
+            "session-id": self._sessionid,
+        }
+        if self._refresh_token:
+            headers["refreshToken"] = self._refresh_token
+        try:
+            await self._request(
+                "GET",
+                "/logout",
+                headers=headers,
+                include_session=False,
+                requester_header=requester_header,
+            )
+        except ApiError as err:
+            _LOGGER.debug("Logout call failed (ignored): %s", err)
+        finally:
+            self.invalidate_session()
 
     def invalidate_session(self) -> None:
         """Discard cached session so the next call re-authenticates."""
@@ -411,6 +485,25 @@ class SchluterApi:
 
         for cookie_name, cookie in response.cookies.items():
             if "session" in cookie_name.lower() and cookie.value:
+                return cookie.value
+
+        return None
+
+    def _extract_refresh_token(
+        self, data: dict[str, Any], response: ClientResponse
+    ) -> str | None:
+        for key in ("refreshToken", "refresh_token"):
+            value = _find_key(data, key)
+            if isinstance(value, str) and value:
+                return value
+
+        for header in ("refreshToken", "refresh-token"):
+            value = response.headers.get(header)
+            if value:
+                return value
+
+        for cookie_name, cookie in response.cookies.items():
+            if "refresh" in cookie_name.lower() and cookie.value:
                 return cookie.value
 
         return None

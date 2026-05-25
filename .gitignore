@@ -18,3 +18,7 @@ coverage.xml
 # Home Assistant configuration
 config/*
 !config/configuration.yaml
+
+# Local credentials and probes (never commit)
+scripts/secrets.json
+scripts/probe_login.log
