@@ -2,16 +2,16 @@
   "domain": "schluter",
   "name": "Schluter DITRA-HEAT (Jakub Custom)",
   "codeowners": [
-    "@IngoS11"
+    "@JakubOleksy"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/Ingos11/ha-schluter",
+  "documentation": "https://github.com/JakubOleksy/ha-schluter",
   "homekit": {},
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/Ingos11/ha-schluter/issues",
+  "issue_tracker": "https://github.com/JakubOleksy/ha-schluter/issues",
   "requirements": [],
   "ssdp": [],
-  "version": "0.4.2",
+  "version": "0.4.3",
   "zeroconf": []
 }

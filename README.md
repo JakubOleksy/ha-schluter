@@ -1,5 +1,5 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![ha-schluter](https://img.shields.io/github/v/release/IngoS11/ha-schluter.svg?1)](https://github.com/IngoS11/ha-schluter) ![Maintenance](https://img.shields.io/maintenance/yes/2025.svg)
+[![ha-schluter](https://img.shields.io/github/v/release/JakubOleksy/ha-schluter.svg?1)](https://github.com/JakubOleksy/ha-schluter) ![Maintenance](https://img.shields.io/maintenance/yes/2026.svg)
 
 # About
 
@@ -17,7 +17,7 @@ Schluter Thermostats sold in Europe seem to use a different cloud backend and ar
 
 ### HACS Installation
 
-This integration overwrites the standard Schluter integration and is, therefore [not accepted into the default HACS repository](https://hacs.xyz/docs/publish/include). To use the integration with HACS you have to add this repository. Under HACS select Integrations in the overflow menu (three dots in the upper right corner) select `Custom repositories` paste the URL, `https://github.com/IngoS11/ha-schluter`, into the `repository` field and select Integration as the Category.
+This integration overwrites the standard Schluter integration and is, therefore [not accepted into the default HACS repository](https://hacs.xyz/docs/publish/include). To use the integration with HACS you have to add this repository. Under HACS select Integrations in the overflow menu (three dots in the upper right corner) select `Custom repositories` paste the URL, `https://github.com/JakubOleksy/ha-schluter`, into the `repository` field and select Integration as the Category.
 
 ### Manual Installation
 
@@ -35,7 +35,7 @@ Now you can clone the repository somewhere else and symlink it to Home Assistant
 1. Clone the repo.
 
 ```shell
-git clone https://github.com/ingos11/ha-schluter.git schluter
+git clone https://github.com/JakubOleksy/ha-schluter.git schluter
 ```
 
 2. Create the symlink to `schluter` in the configuration directory.
@@ -47,7 +47,7 @@ ln -s ha-schluter/custom_components/schluter ~/.homeassistant/custom_components/
 
 #### Copy method
 
-1. Download [ZIP](https://github.com/ingos11/ha-schluter/archive/main.zip) with the code.
+1. Download [ZIP](https://github.com/JakubOleksy/ha-schluter/archive/main.zip) with the code.
 2. Unpack it.
 3. Copy the `custom_components/schluter/` from the unpacked archive to `custom_components`
    in your Home Assistant configuration directory.
