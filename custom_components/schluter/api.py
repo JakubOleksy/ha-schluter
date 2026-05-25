@@ -19,6 +19,11 @@ API_BASE_URL_FALLBACKS = (
     "https://neviweb.com/api",
 )
 DEFAULT_APP_VERSION = "1.13.2"
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
 
 REGULATION_MODE_AWAY = "away"
 REGULATION_MODE_MANUAL = "manual"
@@ -99,6 +104,7 @@ class SchluterApi:
         for base_url in base_candidates:
             self._base_url = base_url.rstrip("/")
             await self._async_update_app_version()
+            _LOGGER.debug("Login attempt using base URL: %s", self._base_url)
 
             attempts = [
                 (
@@ -131,9 +137,18 @@ class SchluterApi:
                         include_session=False,
                         requester_header=requester_header,
                     )
+                    _LOGGER.debug(
+                        "Login successful on %s with session extraction source response headers/cookies/body",
+                        self._base_url,
+                    )
                     last_error = None
                     break
                 except ApiError as err:
+                    _LOGGER.debug(
+                        "Login rejected on %s with error: %s",
+                        self._base_url,
+                        err,
+                    )
                     last_error = err
                     if str(err) != "ACCSESSEXC":
                         raise
@@ -275,8 +290,10 @@ class SchluterApi:
             "SWS-Requester": requester_header
             or self._build_requester_header(app_version=self._app_version),
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
             "Origin": str(base_origin),
             "Referer": referer,
+            "User-Agent": BROWSER_USER_AGENT,
         }
         if headers:
             request_headers.update(headers)
@@ -291,6 +308,13 @@ class SchluterApi:
             json=json_data,
         ) as response:
             data = await self._read_json(response)
+            _LOGGER.debug(
+                "Schluter API call %s %s -> status=%s code=%s",
+                method,
+                path,
+                response.status,
+                _extract_error_code(data),
+            )
             self._raise_for_error(data, response)
             return data, response
 
