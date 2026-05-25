@@ -30,6 +30,8 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CLIMATE, Platform.SENSOR]
 CONF_REFRESH_TOKEN = "refresh_token"
+CONF_SESSION_ID = "session_id"
+UPDATE_TIMEOUT = 60
 
 
 async def async_setup(hass: HomeAssistant, config: Config) -> bool:
@@ -40,9 +42,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     username: str = entry.data[CONF_USERNAME]
     password: str = entry.data[CONF_PASSWORD]
     refresh_token: str | None = entry.data.get(CONF_REFRESH_TOKEN)
+    cached_session: str | None = entry.data.get(CONF_SESSION_ID)
 
     websession = async_get_clientsession(hass)
     api = SchluterApi(websession)
+    if cached_session:
+        # Reuse the session id from a previous successful login so that
+        # async_setup_entry retries do not consume new account session slots.
+        api._sessionid = cached_session  # noqa: SLF001
 
     coordinator = SchluterDataUpdateCoordinator(
         hass, api, username, password, refresh_token, entry
@@ -103,8 +110,15 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_ensure_session(self) -> str:
-        """Return a valid session id, preferring /connect over /login to spare slots."""
+        """Return a valid session id, preferring cached/refresh over /login to spare slots."""
         if self._sessionid is not None:
+            return self._sessionid
+
+        # An earlier successful login may have left a session cached on the api
+        # instance (e.g. from cached_session preload in async_setup_entry).
+        cached = self._api._sessionid  # noqa: SLF001
+        if cached:
+            self._sessionid = cached
             return self._sessionid
 
         if self._refresh_token:
@@ -126,17 +140,24 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _persist_refresh_token(self) -> None:
         token = self._api.refresh_token
-        if not token or token == self._refresh_token:
-            return
-        self._refresh_token = token
+        session_id = self._api.sessionid if self._sessionid else None
         if self._entry is None:
             return
-        new_data = {**self._entry.data, CONF_REFRESH_TOKEN: token}
-        self._hass.config_entries.async_update_entry(self._entry, data=new_data)
+        new_data = dict(self._entry.data)
+        changed = False
+        if token and token != new_data.get(CONF_REFRESH_TOKEN):
+            new_data[CONF_REFRESH_TOKEN] = token
+            self._refresh_token = token
+            changed = True
+        if session_id and session_id != new_data.get(CONF_SESSION_ID):
+            new_data[CONF_SESSION_ID] = session_id
+            changed = True
+        if changed:
+            self._hass.config_entries.async_update_entry(self._entry, data=new_data)
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            async with async_timeout.timeout(10):
+            async with async_timeout.timeout(UPDATE_TIMEOUT):
                 await self._async_ensure_session()
 
                 expiration_timestamp = (

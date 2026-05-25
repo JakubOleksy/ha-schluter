@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -329,19 +330,17 @@ class SchluterApi:
         return await self._async_enrich_devices(base_devices)
 
     async def _async_enrich_devices(self, base_devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Fetch live attributes for each device and merge them into a single model."""
+        """Fetch live attributes for each device in parallel and merge them."""
         attr_query = (
             "setpointMode,roomSetpoint,roomSetpointMin,roomSetpointMax,"
             "roomTemperatureDisplay,outputPercentDisplay,occupancyMode,"
             "gfciStatus,floorSetpointPwm,floorSetpointPwmMin,floorSetpointPwmMax,airFloorMode"
         )
 
-        enriched: list[dict[str, Any]] = []
-        for device in base_devices:
+        async def _fetch_one(device: dict[str, Any]) -> dict[str, Any] | None:
             device_id = _pick(device, "id", "deviceId")
             if device_id is None:
-                continue
-
+                return None
             merged = dict(device)
             try:
                 attrs_payload, _ = await self._request(
@@ -353,18 +352,21 @@ class SchluterApi:
                     merged.update(attrs)
             except ApiError:
                 pass
-
             try:
-                status_payload, _ = await self._request("GET", f"/device/{device_id}/status")
+                status_payload, _ = await self._request(
+                    "GET", f"/device/{device_id}/status"
+                )
                 status_data = status_payload.get("data", status_payload)
                 if isinstance(status_data, dict):
                     merged.update(status_data)
             except ApiError:
                 pass
+            return merged
 
-            enriched.append(merged)
-
-        return enriched
+        results = await asyncio.gather(
+            *(_fetch_one(device) for device in base_devices)
+        )
+        return [item for item in results if item is not None]
 
     async def _request(
         self,
