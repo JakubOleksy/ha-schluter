@@ -14,15 +14,7 @@ from yarl import URL
 _LOGGER = logging.getLogger(__name__)
 
 API_BASE_URL = "https://schluterditraheat.com/api"
-SWS_REQUESTER = json.dumps(
-    {
-        "web-app": {
-            "interface": "schluter",
-            "app-version": "ha-custom-integration",
-        }
-    },
-    separators=(",", ":"),
-)
+DEFAULT_APP_VERSION = "1.13.2"
 
 REGULATION_MODE_AWAY = "away"
 REGULATION_MODE_MANUAL = "manual"
@@ -69,6 +61,7 @@ class SchluterApi:
         self._base_url = base_url.rstrip("/")
         self._sessionid: str | None = None
         self._sessionid_timestamp: datetime | None = None
+        self._app_version: str = DEFAULT_APP_VERSION
 
     @property
     def sessionid(self) -> str:
@@ -84,10 +77,6 @@ class SchluterApi:
 
     async def async_get_sessionid(self, username: str, password: str) -> str:
         """Authenticate and obtain session id."""
-        headers = {
-            "Content-Type": "application/json",
-            "SWS-Requester": SWS_REQUESTER,
-        }
         payload = {
             "username": username,
             "password": password,
@@ -95,13 +84,54 @@ class SchluterApi:
             "stayConnected": True,
         }
 
-        data, response = await self._request(
-            "POST",
-            "/login",
-            headers=headers,
-            json_data=payload,
-            include_session=False,
-        )
+        await self._async_update_app_version()
+
+        attempts = [
+            (
+                payload,
+                self._build_requester_header(app_version=self._app_version),
+            ),
+            (
+                payload,
+                self._build_requester_header(
+                    app_version=self._app_version,
+                    include_mobile=True,
+                ),
+            ),
+            (
+                {**payload, "stayConnected": False},
+                self._build_requester_header(app_version=self._app_version),
+            ),
+        ]
+
+        last_error: ApiError | None = None
+        data: dict[str, Any] = {}
+        response: ClientResponse | None = None
+        for try_payload, requester_header in attempts:
+            try:
+                data, response = await self._request(
+                    "POST",
+                    "/login",
+                    headers={
+                        "Content-Type": "application/json",
+                        "SWS-Requester": requester_header,
+                    },
+                    json_data=try_payload,
+                    include_session=False,
+                    requester_header=requester_header,
+                )
+                last_error = None
+                break
+            except ApiError as err:
+                last_error = err
+                if str(err) != "ACCSESSEXC":
+                    raise
+
+        if last_error is not None:
+            raise last_error
+
+        if response is None:
+            raise ApiError("Login response was empty")
 
         session_id = self._extract_session_id(data, response)
         if not session_id:
@@ -221,11 +251,16 @@ class SchluterApi:
         headers: dict[str, str] | None = None,
         json_data: dict[str, Any] | None = None,
         include_session: bool = True,
+        requester_header: str | None = None,
     ) -> tuple[dict[str, Any], ClientResponse]:
         url = str(URL(self._base_url + "/").join(URL(path.lstrip("/"))))
         request_headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "SWS-Requester": SWS_REQUESTER,
+            "SWS-Requester": requester_header
+            or self._build_requester_header(app_version=self._app_version),
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://schluterditraheat.com",
+            "Referer": "https://schluterditraheat.com/login",
         }
         if headers:
             request_headers.update(headers)
@@ -242,6 +277,37 @@ class SchluterApi:
             data = await self._read_json(response)
             self._raise_for_error(data, response)
             return data, response
+
+    async def _async_update_app_version(self) -> None:
+        """Fetch web-app version used by the official frontend."""
+        version_url = "https://schluterditraheat.com/assets/version.json"
+        try:
+            async with self._session.get(version_url) as response:
+                payload = await response.json(content_type=None)
+                version = payload.get("version") if isinstance(payload, dict) else None
+                if isinstance(version, str) and version.strip():
+                    self._app_version = version.strip()
+        except Exception:
+            # Keep default version if the endpoint is unavailable.
+            self._app_version = self._app_version or DEFAULT_APP_VERSION
+
+    def _build_requester_header(
+        self,
+        app_version: str,
+        include_mobile: bool = False,
+    ) -> str:
+        requester: dict[str, Any] = {
+            "web-app": {
+                "interface": "schluter",
+                "app-version": app_version,
+            }
+        }
+        if include_mobile:
+            requester["mobile"] = {
+                "interface": "schluter",
+                "platform": "web",
+            }
+        return json.dumps(requester, separators=(",", ":"))
 
     async def _read_json(self, response: ClientResponse) -> dict[str, Any]:
         try:
