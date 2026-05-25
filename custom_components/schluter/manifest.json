@@ -1,6 +1,6 @@
 {
   "domain": "schluter",
-  "name": "Schluter DITRA-HEAT-E-Wifi",
+  "name": "Schluter DITRA-HEAT (Jakub Custom)",
   "codeowners": [
     "@IngoS11"
   ],
@@ -10,10 +10,8 @@
   "homekit": {},
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Ingos11/ha-schluter/issues",
-  "requirements": [
-    "aioschluter==0.1.9"
-  ],
+  "requirements": [],
   "ssdp": [],
-  "version": "0.2.2",
+  "version": "0.3.0",
   "zeroconf": []
 }

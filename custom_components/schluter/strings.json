@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Schluter-DITRA-HEAT-E-Wifi",
+        "title": "Schluter DITRA-HEAT (Jakub Custom)",
         "description": "Enter your credentials",
         "data": {
           "username": "[%key:common::config_flow::data::username%]",
@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "[%key:common::config_flow::title::reauth%]",
-        "description": "Schluter-DITRA-HEAT-E-Wifi needs to reauthenticate your account"
+        "description": "Schluter DITRA-HEAT (Jakub Custom) needs to reauthenticate your account"
       }
     },
     "error": {

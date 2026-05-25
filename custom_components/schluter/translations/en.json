@@ -10,6 +10,7 @@
         },
         "step": {
             "user": {
+                "title": "Schluter DITRA-HEAT (Jakub Custom)",
                 "description": "Enter your credentials",
                 "data": {
                     "password": "Password",

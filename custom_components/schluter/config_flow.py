@@ -8,7 +8,6 @@ from typing import Any
 
 from aiohttp import ClientError
 from aiohttp.client_exceptions import ClientConnectorError
-from aioschluter import ApiError, InvalidUserPasswordError, SchluterApi
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -16,6 +15,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import ApiError, InvalidUserPasswordError, SchluterApi
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)

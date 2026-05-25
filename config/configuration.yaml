@@ -14,5 +14,5 @@ logger:
   default: info
   logs:
     custom_components.schluter: debug
-    # write debug log for the aioschluter library
-    aioschluter: debug
+    # write debug log for the custom Schluter API client
+    custom_components.schluter.api: debug

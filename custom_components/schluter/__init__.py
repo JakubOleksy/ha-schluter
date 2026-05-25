@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from aiohttp.client_exceptions import ClientConnectorError
-from aioschluter import (
+from .api import (
     ApiError,
     InvalidSessionIdError,
     InvalidUserPasswordError,

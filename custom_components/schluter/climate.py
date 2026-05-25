@@ -4,17 +4,15 @@ from __future__ import annotations
 import logging
 
 from aiohttp.client_exceptions import ClientConnectorError
-from aioschluter import (
+from .api import (
     ApiError,
     InvalidSessionIdError,
     InvalidUserPasswordError,
-    SchluterApi,
-    Thermostat,
-)
-from aioschluter.const import (
     REGULATION_MODE_AWAY,
     REGULATION_MODE_MANUAL,
     REGULATION_MODE_SCHEDULE,
+    SchluterApi,
+    Thermostat,
 )
 
 from homeassistant.components.climate import ClimateEntity

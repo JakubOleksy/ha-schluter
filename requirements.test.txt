@@ -1,4 +1,3 @@
-aioschluter
 aiohttp_cors
 aioresponses
 pytest
