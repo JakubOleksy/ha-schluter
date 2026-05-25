@@ -12,6 +12,6 @@
   "issue_tracker": "https://github.com/Ingos11/ha-schluter/issues",
   "requirements": [],
   "ssdp": [],
-  "version": "0.4.1",
+  "version": "0.4.2",
   "zeroconf": []
 }
